@@ -1,0 +1,265 @@
+const express = require('express');
+const session = require('express-session');
+const fs = require('fs');
+const path = require('path');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+const ROOT_DIR = __dirname;
+const DATA_FILE = path.join(ROOT_DIR, 'data', 'clients.json');
+const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
+const VIEWS_DIR = path.join(ROOT_DIR, 'views');
+
+const AUTH_USER = process.env.APP_USER || 'admin';
+const AUTH_PASSWORD = process.env.APP_PASSWORD || 'clinic123';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dental-clinic-local-secret-change-me';
+
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use('/public', express.static(PUBLIC_DIR));
+
+app.use(
+  session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false
+    }
+  })
+);
+
+function ensureDataFile() {
+  if (!fs.existsSync(DATA_FILE)) {
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    fs.writeFileSync(DATA_FILE, JSON.stringify([], null, 2), 'utf-8');
+  }
+}
+
+function readClients() {
+  ensureDataFile();
+  try {
+    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+    const data = JSON.parse(raw || '[]');
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error('Ошибка чтения data/clients.json:', error);
+    return [];
+  }
+}
+
+function writeClients(clients) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(clients, null, 2), 'utf-8');
+}
+
+function newId() {
+  return `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeText(value) {
+  return String(value || '').trim();
+}
+
+function isAuthenticated(req) {
+  return Boolean(req.session && req.session.authenticated);
+}
+
+function requireAuth(req, res, next) {
+  if (isAuthenticated(req)) return next();
+
+  const wantsJson = req.path.startsWith('/api') || req.get('accept')?.includes('application/json');
+  if (wantsJson) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return res.redirect('/login');
+}
+
+function sortClients(clients, sortBy) {
+  const items = [...clients];
+
+  const compareText = (a, b) => String(a || '').localeCompare(String(b || ''), 'ru', { sensitivity: 'base' });
+  const compareDate = (a, b) => String(a || '').localeCompare(String(b || ''));
+
+  switch (sortBy) {
+    case 'phone':
+      items.sort((a, b) => compareText(a.phone, b.phone));
+      break;
+    case 'lastVisit':
+      items.sort((a, b) => compareDate(b.lastVisit, a.lastVisit));
+      break;
+    case 'name':
+    default:
+      items.sort((a, b) => compareText(a.fullName, b.fullName));
+      break;
+  }
+
+  return items;
+}
+
+function filterClients(clients, query) {
+  const q = normalizeText(query).toLowerCase();
+  if (!q) return clients;
+
+  return clients.filter((client) => {
+    const values = [
+      client.fullName,
+      client.phone,
+      client.birthday,
+      client.lastVisit,
+      client.complaints,
+      client.treatment,
+      client.notes
+    ];
+    return values.some((value) => String(value || '').toLowerCase().includes(q));
+  });
+}
+
+function validateClientBody(body) {
+  const client = {
+    fullName: normalizeText(body.fullName),
+    phone: normalizeText(body.phone),
+    birthday: normalizeText(body.birthday),
+    lastVisit: normalizeText(body.lastVisit),
+    complaints: normalizeText(body.complaints),
+    treatment: normalizeText(body.treatment),
+    notes: normalizeText(body.notes)
+  };
+
+  if (!client.fullName) {
+    return { ok: false, message: 'Поле «ФИО» обязательно для заполнения.' };
+  }
+
+  if (!client.phone) {
+    return { ok: false, message: 'Поле «Номер телефона» обязательно для заполнения.' };
+  }
+
+  return { ok: true, client };
+}
+
+function getClientById(id) {
+  const clients = readClients();
+  return clients.find((client) => client.id === id) || null;
+}
+
+app.get('/', (req, res) => {
+  if (isAuthenticated(req)) return res.redirect('/app');
+  return res.redirect('/login');
+});
+
+app.get('/login', (req, res) => {
+  if (isAuthenticated(req)) return res.redirect('/app');
+  res.sendFile(path.join(VIEWS_DIR, 'login.html'));
+});
+
+app.post('/auth/login', (req, res) => {
+  const login = normalizeText(req.body.login);
+  const password = normalizeText(req.body.password);
+
+  if (login === AUTH_USER && password === AUTH_PASSWORD) {
+    req.session.authenticated = true;
+    req.session.user = { login };
+    return res.redirect('/app');
+  }
+
+  return res.redirect('/login?error=1');
+});
+
+app.post('/auth/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.redirect('/login');
+  });
+});
+
+app.get('/app', requireAuth, (req, res) => {
+  res.sendFile(path.join(VIEWS_DIR, 'dashboard.html'));
+});
+
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({
+    authenticated: true,
+    user: req.session.user || { login: AUTH_USER }
+  });
+});
+
+app.get('/api/clients', requireAuth, (req, res) => {
+  const { q = '', sort = 'name' } = req.query;
+  const clients = sortClients(filterClients(readClients(), q), sort);
+  res.json(clients);
+});
+
+app.get('/api/clients/:id', requireAuth, (req, res) => {
+  const client = getClientById(req.params.id);
+  if (!client) return res.status(404).json({ error: 'Клиент не найден' });
+  res.json(client);
+});
+
+app.post('/api/clients', requireAuth, (req, res) => {
+  const validation = validateClientBody(req.body);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.message });
+  }
+
+  const clients = readClients();
+  const client = {
+    id: newId(),
+    ...validation.client
+  };
+
+  clients.unshift(client);
+  writeClients(clients);
+
+  res.status(201).json({ message: 'Клиент успешно добавлен.', client });
+});
+
+app.put('/api/clients/:id', requireAuth, (req, res) => {
+  const validation = validateClientBody(req.body);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.message });
+  }
+
+  const clients = readClients();
+  const index = clients.findIndex((client) => client.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Клиент не найден' });
+  }
+
+  clients[index] = {
+    ...clients[index],
+    ...validation.client
+  };
+
+  writeClients(clients);
+
+  res.json({ message: 'Карточка клиента успешно обновлена.', client: clients[index] });
+});
+
+app.delete('/api/clients/:id', requireAuth, (req, res) => {
+  const clients = readClients();
+  const index = clients.findIndex((client) => client.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Клиент не найден' });
+  }
+
+  const removed = clients.splice(index, 1)[0];
+  writeClients(clients);
+
+  res.json({ message: 'Клиент удален.', client: removed });
+});
+
+app.use((req, res) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'Маршрут не найден' });
+  }
+  res.status(404).send('Страница не найдена');
+});
+
+ensureDataFile();
+
+app.listen(PORT, () => {
+  console.log(`Сервер запущен: http://localhost:${PORT}`);
+  console.log(`Логин: ${AUTH_USER}`);
+  console.log(`Пароль: ${AUTH_PASSWORD}`);
+});

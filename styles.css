@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Вход в кабинет клиники</title>
+  <link rel="stylesheet" href="/public/css/styles.css" />
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <div class="brand-badge">Стоматологическая клиника</div>
+      <h1>Вход для сотрудников</h1>
+      <p class="muted">Закрытый внутренний кабинет учета клиентов</p>
+
+      <form class="auth-form" action="/auth/login" method="POST">
+        <label>
+          Логин
+          <input type="text" name="login" autocomplete="username" required />
+        </label>
+
+        <label>
+          Пароль
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+
+        <button type="submit" class="primary-btn">Войти</button>
+      </form>
+
+      <div id="loginError" class="alert alert-error hidden">
+        Неверный логин или пароль.
+      </div>
+
+      <div class="auth-note">
+        <strong>Демо-доступ:</strong> admin / clinic123
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('error') === '1') {
+      document.getElementById('loginError').classList.remove('hidden');
+    }
+  </script>
+</body>
+</html>
